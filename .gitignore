@@ -1,0 +1,9 @@
+airflow/dags/__pycache__/
+airflow/logs/*
+!airflow/logs/.gitkeep
+data/airflow_test/*
+!data/airflow_test/.gitkeep
+drivers/*.jar
+logs/*
+!logs/.gitkeep
+*.pyc
