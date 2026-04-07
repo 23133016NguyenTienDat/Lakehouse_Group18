@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
 from pyspark.sql import SparkSession
-from pyspark.sql.types import StructType, StructField, StringType, TimestampType, DoubleType
-from pyspark.sql.functions import col, lit, lower, trim
+from pyspark.sql.types import StringType
+from pyspark.sql.functions import col, lit, trim, when, current_timestamp, input_file_name
 import sys
 from datetime import datetime
 
@@ -28,19 +28,17 @@ def enforce_user_id(df):
     return df
 
 
-def data_quality_check(df):
-    # Đếm record có user_id null hoặc empty string
-    null_count = df.filter(
-        (col("user_id").isNull()) | (col("user_id") == "")
-    ).count()
-    
-    if null_count > 0:
-        error_msg = f"Data Quality Check FAILED: Found {null_count} records with null/empty user_id"
-        print(f" {error_msg}")
-        raise Exception(error_msg)
-    
-    print(f"Data Quality Check PASSED: All {df.count()} records have valid user_id")
-    return True
+def add_data_quality_flags(df):
+    # NEW: Bronze giữ nguyên dữ liệu thô và chỉ gắn cờ chất lượng dữ liệu, không drop record.
+    return (
+        df.withColumn(
+            "dq_error",
+            when(col("user_id").isNull(), lit("NULL_USER_ID"))
+            .when(col("user_id") == "", lit("EMPTY_USER_ID"))
+            .otherwise(lit(None).cast(StringType()))
+        )
+        .withColumn("is_valid_user_id", col("dq_error").isNull())
+    )
 
 
 def ingest_to_bronze(csv_path, hdfs_output_path, ingest_date, dataset_name="events"):
@@ -71,9 +69,9 @@ def ingest_to_bronze(csv_path, hdfs_output_path, ingest_date, dataset_name="even
             .option("header", "true") \
             .option("inferSchema", "true") \
             .csv(csv_path)
-        
-        initial_count = df.count()
-        print(f" Read {initial_count} records")
+
+        # UPDATED: Tránh full scan bằng count() để pipeline scale tốt hơn.
+        print("CSV read completed")
         
         # 3. Chuẩn hóa tên cột
         print(f"\nStep 2: Normalizing column names")
@@ -104,55 +102,53 @@ def ingest_to_bronze(csv_path, hdfs_output_path, ingest_date, dataset_name="even
                 print(f"  Mapping user_id from review_id (user_id column not found)")
                 df = df.withColumn("user_id", col("review_id").cast(StringType()))
             else:
-                raise Exception("Cannot find user_id or any ID column to map from!")
+                # UPDATED: Không fail pipeline, gắn user_id null để đi tiếp và đánh dấu DQ.
+                print(" Warning: Cannot find user_id or fallback ID column. user_id will be set to NULL")
+                df = df.withColumn("user_id", lit(None).cast(StringType()))
         
         df = enforce_user_id(df)
-        
-        # 5. Loại bỏ records có user_id null/empty
-        print(f"\n Step 4: Removing records with null/empty user_id")
-        df_clean = df.filter(
-            (col("user_id").isNotNull()) & (col("user_id") != "")
+
+        # UPDATED: Giữ toàn bộ record, chỉ gắn cờ chất lượng dữ liệu.
+        print(f"\nStep 4: Adding Data Quality flags (no record drop)")
+        df_with_dq = add_data_quality_flags(df)
+
+        # NEW: Thêm metadata chuẩn Bronze để truy vết nguồn dữ liệu.
+        print(f"\nStep 5: Adding Bronze metadata columns")
+        df_final = (
+            df_with_dq
+            .withColumn("ingest_date", lit(ingest_date))
+            .withColumn("ingestion_timestamp", current_timestamp())
+            .withColumn("source_file", input_file_name())
         )
-        clean_count = df_clean.count()
-        removed_count = initial_count - clean_count
-        
-        if removed_count > 0:
-            print(f"Removed {removed_count} records with invalid user_id")
-        print(f"Clean records: {clean_count}")
-        
-        # 6. Data Quality Check
-        print(f"\nStep 5: Data Quality Check")
-        data_quality_check(df_clean)
-        
-        # 7. Thêm cột ingest_date
-        print(f"\nStep 6: Adding ingest_date column")
-        df_final = df_clean.withColumn("ingest_date", lit(ingest_date))
         
         # Show sample data
         print(f"\nSample data (first 5 rows):")
         df_final.show(5, truncate=False)
         
-        # 8. Ghi ra HDFS dạng Parquet với partition
+        # UPDATED: Ghi Bronze dưới dạng Delta Lake với mergeSchema.
         output_full_path = f"{hdfs_output_path}/{dataset_name}"
         print(f"\nStep 7: Writing to HDFS")
         print(f"   - Output path: {output_full_path}")
-        print(f"   - Format: Parquet (Snappy compression)")
+        print(f"   - Format: Delta Lake")
+        print(f"   - mergeSchema: true")
         print(f"   - Partitions: ingest_date only (region not available in all datasets)")
         print(f"   - Mode: append (immutability)")
         
         # Chỉ partition theo ingest_date (vì không phải dataset nào cũng có region)
         df_final.write \
             .mode("append") \
+            .option("mergeSchema", "true") \
             .partitionBy("ingest_date") \
-            .parquet(output_full_path)
+            .format("delta") \
+            .save(output_full_path)
         
-        print(f"  Successfully wrote {clean_count} records to Bronze layer")
+        print("Write to Bronze Delta layer completed")
         
         # 9. Verification - đọc lại để verify
         print(f"\nStep 8: Verification")
-        verification_df = spark.read.parquet(output_full_path)
-        total_records = verification_df.count()
-        print(f"  Verified: {total_records} total records in Bronze layer")
+        # UPDATED: Đọc lại bằng Delta API, tránh count() để không full scan.
+        verification_df = spark.read.format("delta").load(output_full_path)
+        print("Delta read verification completed")
         
         # Show partition structure
         print(f"\nPartition structure:")
@@ -189,12 +185,11 @@ if __name__ == "__main__":
     if len(sys.argv) > 3:
         dataset_name = sys.argv[3]
     else:
-        # Tự động lấy dataset name từ filename (bỏ .csv)
         dataset_name = csv_filename.replace(".csv", "")
     
-    # Đường dẫn động theo tham số
-    CSV_INPUT_PATH = f"file:///opt/project/data/{csv_filename}"
-    HDFS_OUTPUT_BASE = "hdfs://namenode:8020/lakehouse/bronze"
+    # UPDATED: Đọc dữ liệu từ thư mục raw để khớp với layout hiện tại của project.
+    CSV_INPUT_PATH = f"file:///opt/project/data/raw/{csv_filename}"
+    HDFS_OUTPUT_BASE = "hdfs://namenode:8020/lakehouse/bronze_delta"  # UPDATED
     
     print(f"\n{'='*80}")
     print(f"Starting Bronze Ingestion Job")
