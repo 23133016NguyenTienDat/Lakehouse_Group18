@@ -223,6 +223,7 @@ services:
       - ./airflow/plugins:/opt/airflow/plugins
       - ./scripts:/opt/project/scripts
       - ./data:/opt/project/data
+      - ./drivers:/opt/project/drivers
     depends_on:
       airflow-postgres:
         condition: service_healthy
@@ -257,6 +258,7 @@ services:
       - ./airflow/plugins:/opt/airflow/plugins
       - ./scripts:/opt/project/scripts
       - ./data:/opt/project/data
+      - ./drivers:/opt/project/drivers
     depends_on:
       airflow-postgres:
         condition: service_healthy
@@ -285,6 +287,7 @@ services:
       - ./airflow/plugins:/opt/airflow/plugins
       - ./scripts:/opt/project/scripts
       - ./data:/opt/project/data
+      - ./drivers:/opt/project/drivers
     depends_on:
       airflow-postgres:
         condition: service_healthy

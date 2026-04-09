@@ -3,6 +3,8 @@ airflow/logs/*
 !airflow/logs/.gitkeep
 data/airflow_test/*
 !data/airflow_test/.gitkeep
+data/raw/*
+!data/raw/.gitkeep
 drivers/*.jar
 logs/*
 !logs/.gitkeep
