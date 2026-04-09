@@ -314,7 +314,7 @@ if __name__ == "__main__":
         dataset_name = csv_filename.replace(".csv", "")
     
     CSV_INPUT_PATH = f"file:///opt/project/data/raw/{csv_filename}"
-    HDFS_OUTPUT_BASE = "hdfs://namenode:8020/lakehouse/bronze_delta"  
+    HDFS_OUTPUT_BASE = "hdfs://namenode:8020/lakehouse/bronze"  
     
     print(f"\n{'='*80}")
     print(f"Starting Bronze Ingestion Job")
