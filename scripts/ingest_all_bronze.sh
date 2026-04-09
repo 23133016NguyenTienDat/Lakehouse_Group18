@@ -13,9 +13,9 @@
 INGEST_DATE=${1:-$(date +%Y-%m-%d)}
 
 echo "=============================================================================="
-echo "🚀 Batch Ingestion: ALL CSV Files to Bronze Layer"
+echo "Batch Ingestion: ALL CSV Files to Bronze Layer"
 echo "=============================================================================="
-echo "📅 Ingest Date: $INGEST_DATE"
+echo "Ingest Date: $INGEST_DATE"
 echo "=============================================================================="
 echo ""
 
@@ -40,7 +40,7 @@ for item in "${CSV_FILES[@]}"; do
     
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "📦 Processing: $CSV_FILE → $DATASET_NAME"
+    echo "Processing: $CSV_FILE → $DATASET_NAME"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
     # Chạy spark-submit (với MSYS_NO_PATHCONV=1 cho Git Bash trên Windows)
@@ -54,21 +54,21 @@ for item in "${CSV_FILES[@]}"; do
     
     # Check exit code
     if [ $? -eq 0 ]; then
-        echo "✅ SUCCESS: $CSV_FILE ingested to bronze/$DATASET_NAME"
+        echo "SUCCESS: $CSV_FILE ingested to bronze/$DATASET_NAME"
         ((SUCCESS_COUNT++))
     else
-        echo "❌ FAILED: $CSV_FILE ingestion failed"
+        echo "FAILED: $CSV_FILE ingestion failed"
         ((FAIL_COUNT++))
     fi
 done
 
 echo ""
 echo "=============================================================================="
-echo "📊 Batch Ingestion Summary"
+echo "Batch Ingestion Summary"
 echo "=============================================================================="
-echo "✅ Success: $SUCCESS_COUNT files"
-echo "❌ Failed:  $FAIL_COUNT files"
-echo "📅 Ingest Date: $INGEST_DATE"
+echo "Success: $SUCCESS_COUNT files"
+echo "Failed:  $FAIL_COUNT files"
+echo "Ingest Date: $INGEST_DATE"
 echo "=============================================================================="
 
 # Exit với code 1 nếu có file fail
