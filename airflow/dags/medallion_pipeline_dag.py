@@ -24,6 +24,15 @@ BRONZE_DATASETS = [
     ("sessions.csv", "sessions"),
 ]
 
+SILVER_JOBS = [
+    ("clean_events.py", "events"),
+    ("clean_customers.py", "customers"),
+    ("clean_orders.py", "orders_and_items"),
+    ("clean_products.py", "products"),
+    ("clean_reviews.py", "reviews"),
+    ("clean_sessions.py", "sessions"),
+]
+
 
 SPARK_SUBMIT_BASE = " ".join(
     [
@@ -62,13 +71,16 @@ with DAG(
                 ),
             )
 
-    silver_transform = BashOperator(
-        task_id="silver_transform",
-        bash_command=(
-            "echo '[TODO] Run Silver jobs for ingest_date={{ ds }}' "
-            "&& echo 'Replace this task with spark-submit or python entrypoint later.'"
-        ),
-    )
+    with TaskGroup(group_id="silver_transform") as silver_transform:
+        for script_name, task_suffix in SILVER_JOBS:
+            BashOperator(
+                task_id=f"clean_{task_suffix}",
+                bash_command=(
+                    f"{SPARK_SUBMIT_BASE} "
+                    f"/opt/project/scripts/{script_name} "
+                    "{{ ds }}"
+                ),
+            )
 
     gold_transform = BashOperator(
         task_id="gold_transform",
