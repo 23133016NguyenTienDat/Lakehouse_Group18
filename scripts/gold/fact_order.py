@@ -30,7 +30,6 @@ def build(
     fact = (
         orders_df.join(order_costs, on="order_id", how="left")
         .join(current_customers.select("customer_id", "customer_key"), on="customer_id", how="left")
-        .withColumnRenamed("payment_method", "__order_payment_method_name")
         .withColumn("country_name", country_name_expr("country"))
         .transform(
             lambda df: attach_dimension_key(
@@ -55,15 +54,14 @@ def build(
         .transform(
             lambda df: attach_dimension_key(
                 df,
-                "__order_payment_method_name",
+                "payment_method",
                 dim_payment_method,
                 "payment_method_name",
                 "payment_method_key",
-                "payment_method",
+                "payment_method_key",
                 "order_payment",
             )
         )
-        .drop("__order_payment_method_name")
         .select(
             "order_id",
             "customer_key",
@@ -72,7 +70,7 @@ def build(
             "source_key",
             "device_key",
             "order_time",
-            "payment_method",
+            "payment_method_key",
             "discount_pct",
             col("subtotal_usd").alias("gross_revenue_usd"),
             (col("total_usd") - coalesce(col("order_cost_usd"), lit(0.0))).alias("net_margin_usd"),
@@ -90,7 +88,7 @@ def build(
             "source_key",
             "device_key",
             "order_time",
-            "payment_method",
+            "payment_method_key",
             "discount_pct",
             "gross_revenue_usd",
             "net_margin_usd",
