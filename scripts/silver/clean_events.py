@@ -3,6 +3,10 @@
 
 import sys
 from datetime import datetime
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
 from pyspark.sql.functions import col, when, to_timestamp, to_date, hour, concat_ws
 from pyspark.sql.types import IntegerType
 from silver_utils import (
@@ -19,7 +23,7 @@ def clean_events(process_date: str):
     spark = create_spark_session("Silver_Events")
     
     try:
-        df = read_bronze(spark, "events")
+        df = read_bronze(spark, "events", process_date)
         df = filter_valid_records(df)
         
         # Parse timestamp
@@ -57,7 +61,7 @@ def clean_events(process_date: str):
         df = add_silver_metadata(df, process_date)
         df = drop_bronze_columns(df)
         
-        write_silver_merge(df, spark, SILVER_PATH, ["event_id"], "event_date")
+        write_silver_merge(df, spark, SILVER_PATH, ["event_id"])
         
         logger.info("=== EVENTS COMPLETED ===")
     finally:

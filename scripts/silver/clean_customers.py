@@ -3,6 +3,10 @@
 
 import sys
 from datetime import datetime
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
 from pyspark.sql.functions import (
     col, when, lower, trim, to_date, year, split, concat_ws, lit
 )
@@ -21,7 +25,7 @@ def clean_customers(process_date: str):
     spark = create_spark_session("Silver_Customers")
     
     try:
-        df = read_bronze(spark, "customers")
+        df = read_bronze(spark, "customers", process_date)
         df = filter_valid_records(df)
         
         # Parse date
@@ -70,7 +74,7 @@ def clean_customers(process_date: str):
         df = add_silver_metadata(df, process_date)
         df = drop_bronze_columns(df)
         
-        write_silver_merge(df, spark, SILVER_PATH, ["customer_id"], "signup_year")
+        write_silver_merge(df, spark, SILVER_PATH, ["customer_id"])
         
         logger.info("=== CUSTOMERS COMPLETED ===")
     finally:

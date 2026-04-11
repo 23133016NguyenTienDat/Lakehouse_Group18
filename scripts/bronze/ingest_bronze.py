@@ -30,8 +30,8 @@ def create_events_schema():
         StructField("timestamp", StringType(), True),
         StructField("event_type", StringType(), True),
         StructField("product_id", DoubleType(), True),
-        StructField("qty", IntegerType(), True),
-        StructField("cart_size", IntegerType(), True),
+        StructField("qty", DoubleType(), True),
+        StructField("cart_size", DoubleType(), True),
         StructField("payment", StringType(), True),
         StructField("discount_pct", DoubleType(), True),
         StructField("amount_usd", DoubleType(), True),
@@ -296,26 +296,25 @@ def ingest_to_bronze(csv_path, hdfs_output_path, ingest_date, dataset_name="even
         spark.stop()
 
 
-if __name__ == "__main__":    
-    # Parse arguments
+def main():
     if len(sys.argv) > 1:
         ingest_date = sys.argv[1]
     else:
         ingest_date = datetime.now().strftime("%Y-%m-%d")
-    
+
     if len(sys.argv) > 2:
         csv_filename = sys.argv[2]
     else:
         csv_filename = "events.csv"
-    
+
     if len(sys.argv) > 3:
         dataset_name = sys.argv[3]
     else:
         dataset_name = csv_filename.replace(".csv", "")
-    
+
     CSV_INPUT_PATH = f"file:///opt/project/data/raw/{csv_filename}"
-    HDFS_OUTPUT_BASE = "hdfs://namenode:8020/lakehouse/bronze"  
-    
+    HDFS_OUTPUT_BASE = "hdfs://namenode:8020/lakehouse/bronze"
+
     print(f"\n{'='*80}")
     print(f"Starting Bronze Ingestion Job")
     print(f"{'='*80}")
@@ -333,3 +332,7 @@ if __name__ == "__main__":
         ingest_date=ingest_date,
         dataset_name=dataset_name
     )
+
+
+if __name__ == "__main__":
+    main()

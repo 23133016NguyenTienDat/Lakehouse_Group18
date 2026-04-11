@@ -3,6 +3,10 @@
 
 import sys
 from datetime import datetime
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
 from pyspark.sql.functions import col, when, concat_ws, round as spark_round, abs as spark_abs
 from silver_utils import (
     create_spark_session, read_bronze, filter_valid_records,
@@ -18,6 +22,7 @@ def clean_products(process_date: str):
     spark = create_spark_session("Silver_Products")
     
     try:
+        # Keep full-scan for products because this job uses overwrite semantics.
         df = read_bronze(spark, "products")
         df = filter_valid_records(df)
         

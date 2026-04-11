@@ -3,6 +3,10 @@
 
 import sys
 from datetime import datetime
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
 from pyspark.sql.functions import col, when, to_timestamp, to_date, year, month, hour, dayofweek, concat_ws, lit
 from silver_utils import (
     create_spark_session, read_bronze, filter_valid_records,
@@ -18,7 +22,7 @@ def clean_sessions(process_date: str):
     spark = create_spark_session("Silver_Sessions")
     
     try:
-        df = read_bronze(spark, "sessions")
+        df = read_bronze(spark, "sessions", process_date)
         df = filter_valid_records(df)
         
         df = df.withColumn("start_time", to_timestamp(col("start_time")))
@@ -51,7 +55,7 @@ def clean_sessions(process_date: str):
         df = add_silver_metadata(df, process_date)
         df = drop_bronze_columns(df)
         
-        write_silver_merge(df, spark, SILVER_PATH, ["session_id"], "session_date")
+        write_silver_merge(df, spark, SILVER_PATH, ["session_id"])
         
         logger.info("=== SESSIONS COMPLETED ===")
     finally:

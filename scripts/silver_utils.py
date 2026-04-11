@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 """
 Silver Layer Utilities - Common functions for all Silver transformations
 """
 
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import (
-    col, lit, trim, when, current_timestamp, current_date,
-    row_number, concat_ws
-)
-from pyspark.sql.types import StringType
+from pyspark.sql.functions import col, lit, trim, when, current_timestamp, row_number
 from pyspark.sql.window import Window
 from delta.tables import DeltaTable
 import logging
@@ -30,11 +28,15 @@ def create_spark_session(app_name: str) -> SparkSession:
         .getOrCreate()
 
 
-def read_bronze(spark: SparkSession, dataset: str) -> DataFrame:
-    """Read from Bronze layer with schema validation"""
+def read_bronze(spark: SparkSession, dataset: str, process_date: str | None = None) -> DataFrame:
+    """Read from Bronze layer with optional ingest_date filtering for incremental runs."""
     path = f"hdfs://namenode:8020/lakehouse/bronze/{dataset}"
     logger.info(f"Reading Bronze: {path}")
-    return spark.read.format("delta").load(path)
+    df = spark.read.format("delta").load(path)
+    if process_date:
+        logger.info(f"Applying Bronze ingest_date filter: {process_date}")
+        df = df.filter(col("ingest_date") == lit(process_date))
+    return df
 
 
 def filter_valid_records(df: DataFrame) -> DataFrame:
@@ -76,8 +78,7 @@ def drop_bronze_columns(df: DataFrame) -> DataFrame:
     return df.drop(*[c for c in bronze_cols if c in df.columns])
 
 
-def write_silver_merge(df: DataFrame, spark: SparkSession, path: str, 
-                       key_cols: list, partition_col: str = None):
+def write_silver_merge(df: DataFrame, spark: SparkSession, path: str, key_cols: list):
     """
     Write to Silver using Delta MERGE (upsert) - idempotent & incremental
     """
@@ -105,10 +106,7 @@ def write_silver_merge(df: DataFrame, spark: SparkSession, path: str,
         logger.info("MERGE completed (upsert)")
     else:
         logger.info("Table not found, creating new...")
-        writer = df.write.mode("overwrite").format("delta")
-        if partition_col and partition_col in df.columns:
-            writer = writer.partitionBy(partition_col)
-        writer.save(path)
+        df.write.mode("overwrite").format("delta").save(path)
         logger.info("Initial write completed")
 
 

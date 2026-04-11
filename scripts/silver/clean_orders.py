@@ -3,6 +3,10 @@
 
 import sys
 from datetime import datetime
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
 from pyspark.sql.functions import (
     col, when, to_timestamp, to_date, year, month, hour, concat_ws, sum as spark_sum, abs as spark_abs
 )
@@ -19,7 +23,7 @@ ORDER_ITEMS_SILVER = "hdfs://namenode:8020/lakehouse/silver/order_items"
 def clean_orders(spark, process_date: str):
     logger.info("--- Processing: ORDERS ---")
     
-    df = read_bronze(spark, "orders")
+    df = read_bronze(spark, "orders", process_date)
     df = filter_valid_records(df)
     
     # Parse & normalize
@@ -53,7 +57,7 @@ def clean_orders(spark, process_date: str):
     df = add_silver_metadata(df, process_date)
     df = drop_bronze_columns(df)
     
-    write_silver_merge(df, spark, ORDERS_SILVER, ["order_id"], "order_date")
+    write_silver_merge(df, spark, ORDERS_SILVER, ["order_id"])
 
 
 def clean_order_items(spark, process_date: str):
@@ -63,7 +67,7 @@ def clean_order_items(spark, process_date: str):
     """
     logger.info("--- Processing: ORDER_ITEMS ---")
     
-    df = read_bronze(spark, "order_items")
+    df = read_bronze(spark, "order_items", process_date)
     df = filter_valid_records(df)
     
     # Aggregate duplicates: same (order_id, product_id) -> sum quantity & line_total
