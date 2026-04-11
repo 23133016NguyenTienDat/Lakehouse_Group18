@@ -64,7 +64,7 @@ with DAG(
                 task_id=f"ingest_{dataset_name}",
                 bash_command=(
                     f"{SPARK_SUBMIT_BASE} "
-                    "/opt/project/scripts/ingest_bronze.py "
+                    "/opt/project/scripts/bronze/ingest_bronze.py "
                     "{{ ds }} "
                     f"{csv_file} "
                     f"{dataset_name}"
@@ -77,7 +77,7 @@ with DAG(
                 task_id=f"clean_{task_suffix}",
                 bash_command=(
                     f"{SPARK_SUBMIT_BASE} "
-                    f"/opt/project/scripts/{script_name} "
+                    f"/opt/project/scripts/silver/{script_name} "
                     "{{ ds }}"
                 ),
             )

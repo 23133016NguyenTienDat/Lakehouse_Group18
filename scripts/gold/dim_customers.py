@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, lit, when
 

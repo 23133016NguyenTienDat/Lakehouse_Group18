@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 """Gold Layer utilities for building dimensional marts from Silver tables."""
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.column import Column
 from pyspark.sql.functions import col, lit, row_number, sha2, concat_ws, coalesce, max as spark_max
 from pyspark.sql.window import Window
-from delta.tables import DeltaTable
 
 from silver_utils import create_spark_session, logger
 
@@ -127,13 +128,19 @@ def write_gold_merge(
         prepared_df = existing_rows.unionByName(new_rows)
 
     merge_condition = " AND ".join([f"target.{k} = source.{k}" for k in key_cols])
-    (
-        DeltaTable.forPath(spark, path)
-        .alias("target")
-        .merge(prepared_df.alias("source"), merge_condition)
-        .whenMatchedUpdateAll()
-        .whenNotMatchedInsertAll()
-        .execute()
+    source_view = f"tmp_merge_{table_name}"
+    prepared_df.createOrReplaceTempView(source_view)
+    update_assignments = ", ".join([f"target.{c} = source.{c}" for c in prepared_df.columns])
+    insert_columns = ", ".join(prepared_df.columns)
+    insert_values = ", ".join([f"source.{c}" for c in prepared_df.columns])
+    spark.sql(
+        f"""
+        MERGE INTO delta.`{path}` AS target
+        USING {source_view} AS source
+        ON {merge_condition}
+        WHEN MATCHED THEN UPDATE SET {update_assignments}
+        WHEN NOT MATCHED THEN INSERT ({insert_columns}) VALUES ({insert_values})
+        """
     )
     spark.sql(f"CREATE TABLE IF NOT EXISTS {full_name} USING DELTA LOCATION '{path}'")
     spark.sql(f"REFRESH TABLE {full_name}")

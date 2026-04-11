@@ -30,6 +30,7 @@ def build(
     fact = (
         orders_df.join(order_costs, on="order_id", how="left")
         .join(current_customers.select("customer_id", "customer_key"), on="customer_id", how="left")
+        .withColumnRenamed("payment_method", "__order_payment_method_name")
         .withColumn("country_name", country_name_expr("country"))
         .transform(
             lambda df: attach_dimension_key(
@@ -54,7 +55,7 @@ def build(
         .transform(
             lambda df: attach_dimension_key(
                 df,
-                "payment_method",
+                "__order_payment_method_name",
                 dim_payment_method,
                 "payment_method_name",
                 "payment_method_key",
@@ -62,6 +63,7 @@ def build(
                 "order_payment",
             )
         )
+        .drop("__order_payment_method_name")
         .select(
             "order_id",
             "customer_key",

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 """Gold Layer orchestrator: build dimensional and fact tables from Silver Delta tables."""
 
 import sys

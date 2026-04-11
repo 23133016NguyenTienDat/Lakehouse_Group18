@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pyspark.sql import DataFrame
 
 from gold.common import country_name_expr

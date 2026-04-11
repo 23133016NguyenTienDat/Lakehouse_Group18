@@ -16,7 +16,7 @@ echo "--- Running: build_gold.py ---"
 MSYS_NO_PATHCONV=1 docker exec lakehouse-spark-master \
     /opt/spark/bin/spark-submit \
     --master spark://spark-master:7077 \
-    --jars /opt/project/drivers/delta-core_2.12-2.4.0.jar,/opt/project/drivers/delta-storage-2.4.0.jar \
+    --packages io.delta:delta-spark_2.12:3.3.0 \
     --conf spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension \
     --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog \
     --conf spark.delta.logStore.class=org.apache.spark.sql.delta.storage.HDFSLogStore \
@@ -37,4 +37,3 @@ else
     echo "=============================================="
     exit 1
 fi
-
