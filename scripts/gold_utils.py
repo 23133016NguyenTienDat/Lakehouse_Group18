@@ -1,22 +1,55 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-"""Gold Layer utilities for building dimensional marts from Silver tables."""
-
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.column import Column
 from pyspark.sql.functions import col, lit, row_number, sha2, concat_ws, coalesce, max as spark_max
 from pyspark.sql.window import Window
 
-from silver_utils import create_spark_session, logger
-
+from silver_utils import logger
 
 GOLD_BASE_PATH = "hdfs://namenode:8020/lakehouse/gold"
 GOLD_WATERMARK_TABLE = "gold.pipeline_watermark"
+GOLD_WATERMARK_PATH = f"{GOLD_BASE_PATH}/pipeline_watermark"
 
+def create_gold_spark_session(app_name: str) -> SparkSession:
+    return (
+        SparkSession.builder
+        .appName(app_name)
+        .config("spark.sql.catalogImplementation", "hive")
+        .config("hive.metastore.uris", "thrift://hive-metastore:9083")
+        .config("spark.sql.warehouse.dir", "hdfs://namenode:8020/user/hive/warehouse")
+        .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:8020")
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+        .enableHiveSupport()
+        .getOrCreate()
+    )
+
+def _ensure_gold_watermark_table(spark: SparkSession):
+    create_stmt = f"""
+        CREATE TABLE IF NOT EXISTS {GOLD_WATERMARK_TABLE} (
+            pipeline_name STRING,
+            last_process_date STRING,
+            updated_at TIMESTAMP
+        )
+        USING DELTA
+        LOCATION '{GOLD_WATERMARK_PATH}'
+        """
+
+    spark.sql("CREATE DATABASE IF NOT EXISTS gold")
+
+    try:
+        spark.sql(create_stmt)
+        spark.sql(f"REFRESH TABLE {GOLD_WATERMARK_TABLE}")
+        spark.table(GOLD_WATERMARK_TABLE).limit(1).collect()
+    except Exception as exc:
+        logger.warning(f"Recreating broken watermark table metadata: {exc}")
+        spark.sql(f"DROP TABLE IF EXISTS {GOLD_WATERMARK_TABLE}")
+        spark.sql(create_stmt)
+        spark.sql(f"REFRESH TABLE {GOLD_WATERMARK_TABLE}")
 
 def read_silver(spark: SparkSession, dataset: str, process_date: str | None = None) -> DataFrame:
-    """Read a Silver Delta table with optional process-date filtering."""
     path = f"hdfs://namenode:8020/lakehouse/silver/{dataset}"
     logger.info(f"Reading Silver: {path}")
     df = spark.read.format("delta").load(path)
@@ -25,9 +58,7 @@ def read_silver(spark: SparkSession, dataset: str, process_date: str | None = No
         df = df.filter(col("silver_process_date") == lit(process_date))
     return df
 
-
 def read_silver_since(spark: SparkSession, dataset: str, watermark_date: str) -> DataFrame:
-    """Read only Silver records newer than a watermark date."""
     path = f"hdfs://namenode:8020/lakehouse/silver/{dataset}"
     logger.info(f"Reading Silver delta since {watermark_date}: {path}")
     df = spark.read.format("delta").load(path)
@@ -35,22 +66,17 @@ def read_silver_since(spark: SparkSession, dataset: str, watermark_date: str) ->
         return df.filter(col("silver_process_date") > lit(watermark_date))
     return df.limit(0)
 
-
 def delta_table_exists(spark: SparkSession, path: str) -> bool:
-    """Check whether a Delta table exists."""
     try:
         spark.read.format("delta").load(path).limit(1).collect()
         return True
     except Exception:
         return False
 
-
 def read_delta_if_exists(spark: SparkSession, path: str) -> DataFrame | None:
-    """Read a Delta table if it exists, else return None."""
     if delta_table_exists(spark, path):
         return spark.read.format("delta").load(path)
     return None
-
 
 def write_gold_overwrite(
     df: DataFrame,
@@ -59,7 +85,6 @@ def write_gold_overwrite(
     path: str,
     partition_col: str = None,
 ):
-    """Overwrite a Gold Delta table and persist metadata with saveAsTable."""
     full_name = f"gold.{table_name}"
     logger.info(f"Writing Gold (OVERWRITE): {full_name} -> {path}")
     spark.sql("CREATE DATABASE IF NOT EXISTS gold")
@@ -69,7 +94,6 @@ def write_gold_overwrite(
     writer.saveAsTable(full_name)
     spark.sql(f"REFRESH TABLE {full_name}")
 
-
 def write_gold_merge(
     df: DataFrame,
     spark: SparkSession,
@@ -78,7 +102,6 @@ def write_gold_merge(
     key_cols: list[str],
     surrogate_col: str | None = None,
 ):
-    """Merge delta rows into a Gold table while preserving surrogate-key stability."""
     full_name = f"gold.{table_name}"
     spark.sql("CREATE DATABASE IF NOT EXISTS gold")
     logger.info(f"Writing Gold (MERGE): {full_name} -> {path}")
@@ -145,9 +168,7 @@ def write_gold_merge(
     spark.sql(f"CREATE TABLE IF NOT EXISTS {full_name} USING DELTA LOCATION '{path}'")
     spark.sql(f"REFRESH TABLE {full_name}")
 
-
 def get_latest_silver_process_date(spark: SparkSession, datasets: list[str]) -> str | None:
-    """Get latest available silver_process_date across provided Silver datasets."""
     latest_values = []
     for dataset in datasets:
         df = read_silver(spark, dataset)
@@ -160,12 +181,9 @@ def get_latest_silver_process_date(spark: SparkSession, datasets: list[str]) -> 
         return None
     return max(latest_values)
 
-
 def get_gold_watermark(spark: SparkSession, pipeline_name: str) -> str | None:
-    """Read the last processed watermark for a Gold pipeline."""
-    spark.sql("CREATE DATABASE IF NOT EXISTS gold")
-    if not spark.catalog.tableExists(GOLD_WATERMARK_TABLE):
-        return None
+    _ensure_gold_watermark_table(spark)
+
     row = (
         spark.table(GOLD_WATERMARK_TABLE)
         .where(col("pipeline_name") == lit(pipeline_name))
@@ -174,20 +192,9 @@ def get_gold_watermark(spark: SparkSession, pipeline_name: str) -> str | None:
     )
     return None if row is None or row["last_process_date"] is None else str(row["last_process_date"])
 
-
 def upsert_gold_watermark(spark: SparkSession, pipeline_name: str, process_date: str):
-    """Upsert watermark for a Gold pipeline."""
-    spark.sql("CREATE DATABASE IF NOT EXISTS gold")
-    spark.sql(
-        f"""
-        CREATE TABLE IF NOT EXISTS {GOLD_WATERMARK_TABLE} (
-            pipeline_name STRING,
-            last_process_date STRING,
-            updated_at TIMESTAMP
-        )
-        USING DELTA
-        """
-    )
+    _ensure_gold_watermark_table(spark)
+
     spark.sql(f"DELETE FROM {GOLD_WATERMARK_TABLE} WHERE pipeline_name = '{pipeline_name}'")
     spark.sql(
         f"""
@@ -206,17 +213,14 @@ def _normalize_order_cols(order_cols: list) -> list[Column]:
             normalized.append(col(order_col))
     return normalized
 
-
 def assign_surrogate_key(
     df: DataFrame,
     key_col: str,
     order_cols: list,
     start_at: int = 0,
 ) -> DataFrame:
-    """Assign deterministic surrogate keys ordered by the provided columns."""
     window = Window.orderBy(*_normalize_order_cols(order_cols))
     return df.withColumn(key_col, row_number().over(window) + lit(start_at))
-
 
 def build_static_dimension(
     source_df: DataFrame,
@@ -224,7 +228,6 @@ def build_static_dimension(
     key_col: str,
     existing_df: DataFrame | None = None,
 ) -> DataFrame:
-    """Build a non-SCD dimension while preserving existing surrogate keys."""
     source_values = (
         source_df.select(value_col)
         .where(col(value_col).isNotNull())
@@ -254,14 +257,12 @@ def build_static_dimension(
 
     return existing_values.unionByName(new_rows)
 
-
 def _hash_attributes(df: DataFrame, attribute_cols: list[str]) -> DataFrame:
     hash_inputs = [
         coalesce(col(column_name).cast("string"), lit("__NULL__"))
         for column_name in attribute_cols
     ]
     return df.withColumn("_attr_hash", sha2(concat_ws("||", *hash_inputs), 256))
-
 
 def build_scd2_dimension(
     source_df: DataFrame,
@@ -271,7 +272,6 @@ def build_scd2_dimension(
     process_ts: str,
     existing_df: DataFrame | None = None,
 ) -> DataFrame:
-    """Build an SCD Type 2 dimension using overwrite semantics."""
     process_ts_col = lit(process_ts).cast("timestamp")
     source = source_df.select(natural_key, *attribute_cols).dropDuplicates([natural_key])
     final_cols = [

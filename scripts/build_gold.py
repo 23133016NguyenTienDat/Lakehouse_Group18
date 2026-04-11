@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-"""Gold Layer orchestrator: build dimensional and fact tables from Silver Delta tables."""
+"""Build a single Gold table for DAG-level orchestration."""
 
 import sys
 from datetime import datetime
 
+from pyspark.sql import DataFrame
 from pyspark.sql.functions import col
 
 from gold import (
@@ -26,7 +27,7 @@ from gold import (
 )
 from gold.paths import GOLD_PATHS
 from gold_utils import (
-    create_spark_session,
+    create_gold_spark_session,
     get_gold_watermark,
     get_latest_silver_process_date,
     read_delta_if_exists,
@@ -37,7 +38,6 @@ from gold_utils import (
     write_gold_overwrite,
 )
 from silver_utils import logger
-
 
 SILVER_DATASETS = [
     "customers",
@@ -50,12 +50,34 @@ SILVER_DATASETS = [
 ]
 PIPELINE_NAME = "gold_star_schema"
 
+SUPPORTED_TABLES = {
+    "dim_country",
+    "dim_source",
+    "dim_device",
+    "dim_payment_method",
+    "dim_category",
+    "dim_date",
+    "dim_customers",
+    "dim_products",
+    "fact_order",
+    "fact_order_item",
+    "fact_web_events",
+    "fact_review",
+    "fact_session",
+    "fact_customer_funnel",
+    "update_watermark",
+}
 
-def _write_gold_full(df, spark, table_name: str):
+def _write_gold_full(df: DataFrame, spark, table_name: str):
     write_gold_overwrite(df, spark, table_name, GOLD_PATHS[table_name])
 
-
-def _write_gold_fact_incremental(df, spark, table_name: str, key_cols: list[str], surrogate_col: str):
+def _write_gold_fact_incremental(
+    df: DataFrame,
+    spark,
+    table_name: str,
+    key_cols: list[str],
+    surrogate_col: str,
+):
     write_gold_merge(
         df=df,
         spark=spark,
@@ -65,39 +87,62 @@ def _write_gold_fact_incremental(df, spark, table_name: str, key_cols: list[str]
         surrogate_col=surrogate_col,
     )
 
+def _read_gold_required(spark, table_name: str) -> DataFrame:
+    df = read_delta_if_exists(spark, GOLD_PATHS[table_name])
+    if df is None:
+        raise RuntimeError(f"Missing dependency gold.{table_name}. Run prerequisite Gold tasks first.")
+    return df
 
-def main(process_date: str, mode: str = "full"):
+def _is_empty(df: DataFrame) -> bool:
+    return df.limit(1).count() == 0
+
+def main(process_date: str, table_name: str, mode: str = "incremental"):
     if mode not in {"full", "incremental"}:
         raise ValueError("Mode must be one of: full, incremental")
 
-    logger.info("=== GOLD: STAR SCHEMA BUILD ===")
-    logger.info(f"GOLD run mode: {mode}")
-    spark = create_spark_session("Gold_Star_Schema")
+    if table_name not in SUPPORTED_TABLES:
+        supported = ", ".join(sorted(SUPPORTED_TABLES))
+        raise ValueError(f"Unsupported table '{table_name}'. Supported tables: {supported}")
+
+    spark = create_gold_spark_session(f"Gold_{table_name}")
     process_ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
     try:
+        if table_name == "update_watermark":
+            latest_processed = get_latest_silver_process_date(spark, SILVER_DATASETS)
+            if latest_processed is not None:
+                upsert_gold_watermark(spark, PIPELINE_NAME, latest_processed)
+                logger.info(f"Gold watermark updated to {latest_processed}")
+            else:
+                logger.info("No Silver watermark found; skip watermark update.")
+            return
+
+        effective_mode = mode
         incremental_watermark = None
+        has_new_silver = True
         if mode == "incremental":
             latest_silver_process_date = get_latest_silver_process_date(spark, SILVER_DATASETS)
             last_gold_watermark = get_gold_watermark(spark, PIPELINE_NAME)
 
             if latest_silver_process_date is None:
-                logger.info("No Silver process watermark found; skipping Gold run.")
+                logger.info("No Silver process watermark found; skipping table build.")
                 return
 
             if last_gold_watermark is None:
-                logger.info("Gold watermark not found; running initial full load.")
-                mode = "full"
+                logger.info("Gold watermark not found; running initial full load for this table.")
+                effective_mode = "full"
             elif latest_silver_process_date <= last_gold_watermark:
                 logger.info(
                     "No new Silver watermark detected "
-                    f"(latest={latest_silver_process_date}, gold={last_gold_watermark}); skipping."
+                    f"(latest={latest_silver_process_date}, gold={last_gold_watermark}); skipping table build."
                 )
-                return
+                has_new_silver = False
             else:
                 incremental_watermark = last_gold_watermark
 
-        # Full context is always needed for dimensions/SCD2 and fact joins.
+        if not has_new_silver:
+            return
+
         customers_silver = read_silver_base(spark, "customers")
         orders_silver = read_silver_base(spark, "orders")
         order_items_silver = read_silver_base(spark, "order_items")
@@ -106,105 +151,178 @@ def main(process_date: str, mode: str = "full"):
         sessions_silver = read_silver_base(spark, "sessions")
         events_silver = read_silver_base(spark, "events")
 
-        valid_orders = orders_silver.where(col("validation_errors").isNull()).cache()
-        valid_order_items = order_items_silver.where(col("validation_errors").isNull()).cache()
-        valid_reviews = reviews_silver.where(col("validation_errors").isNull()).cache()
-        valid_sessions = sessions_silver.where(col("validation_errors").isNull()).cache()
-        valid_events = events_silver.where(col("validation_errors").isNull()).cache()
+        valid_orders = orders_silver.where(col("validation_errors").isNull())
+        valid_order_items = order_items_silver.where(col("validation_errors").isNull())
+        valid_reviews = reviews_silver.where(col("validation_errors").isNull())
+        valid_sessions = sessions_silver.where(col("validation_errors").isNull())
+        valid_events = events_silver.where(col("validation_errors").isNull())
         events_with_customer = valid_events.join(
             valid_sessions.select("session_id", "customer_id"),
             on="session_id",
             how="inner",
-        ).cache()
-
-        dim_country_df = dim_country.build(
-            customers_silver,
-            orders_silver,
-            sessions_silver,
-            read_delta_if_exists(spark, GOLD_PATHS["dim_country"]),
         )
-        _write_gold_full(dim_country_df, spark, "dim_country")
 
-        dim_source_df = dim_source.build(
-            orders_silver,
-            sessions_silver,
-            read_delta_if_exists(spark, GOLD_PATHS["dim_source"]),
-        )
-        _write_gold_full(dim_source_df, spark, "dim_source")
+        if table_name == "dim_country":
+            df = dim_country.build(
+                customers_silver,
+                orders_silver,
+                sessions_silver,
+                read_delta_if_exists(spark, GOLD_PATHS["dim_country"]),
+            )
+            _write_gold_full(df, spark, table_name)
+            return
 
-        dim_device_df = dim_device.build(
-            orders_silver,
-            sessions_silver,
-            read_delta_if_exists(spark, GOLD_PATHS["dim_device"]),
-        )
-        _write_gold_full(dim_device_df, spark, "dim_device")
+        if table_name == "dim_source":
+            df = dim_source.build(
+                orders_silver,
+                sessions_silver,
+                read_delta_if_exists(spark, GOLD_PATHS["dim_source"]),
+            )
+            _write_gold_full(df, spark, table_name)
+            return
 
-        dim_payment_method_df = dim_payment_method.build(
-            orders_silver,
-            events_silver,
-            read_delta_if_exists(spark, GOLD_PATHS["dim_payment_method"]),
-        )
-        _write_gold_full(dim_payment_method_df, spark, "dim_payment_method")
+        if table_name == "dim_device":
+            df = dim_device.build(
+                orders_silver,
+                sessions_silver,
+                read_delta_if_exists(spark, GOLD_PATHS["dim_device"]),
+            )
+            _write_gold_full(df, spark, table_name)
+            return
 
-        dim_category_df = dim_category.build(
-            products_silver,
-            read_delta_if_exists(spark, GOLD_PATHS["dim_category"]),
-        )
-        _write_gold_full(dim_category_df, spark, "dim_category")
+        if table_name == "dim_payment_method":
+            df = dim_payment_method.build(
+                orders_silver,
+                events_silver,
+                read_delta_if_exists(spark, GOLD_PATHS["dim_payment_method"]),
+            )
+            _write_gold_full(df, spark, table_name)
+            return
 
-        dim_date_df = dim_date.build(
-            spark,
-            customers_silver,
-            orders_silver,
-            reviews_silver,
-            sessions_silver,
-            events_silver,
-        )
-        _write_gold_full(dim_date_df, spark, "dim_date")
+        if table_name == "dim_category":
+            df = dim_category.build(
+                products_silver,
+                read_delta_if_exists(spark, GOLD_PATHS["dim_category"]),
+            )
+            _write_gold_full(df, spark, table_name)
+            return
 
-        dim_customers_df = dim_customers.build(
-            customers_silver,
-            dim_country_df,
-            process_date,
-            process_ts,
-            read_delta_if_exists(spark, GOLD_PATHS["dim_customers"]),
-        )
-        _write_gold_full(dim_customers_df, spark, "dim_customers")
-        current_customers = dim_customers_df.where(col("is_current") == True).cache()
+        if table_name == "dim_date":
+            df = dim_date.build(
+                spark,
+                customers_silver,
+                orders_silver,
+                reviews_silver,
+                sessions_silver,
+                events_silver,
+            )
+            _write_gold_full(df, spark, table_name)
+            return
 
-        dim_products_df = dim_products.build(
-            products_silver,
-            dim_category_df,
-            process_ts,
-            read_delta_if_exists(spark, GOLD_PATHS["dim_products"]),
-        )
-        _write_gold_full(dim_products_df, spark, "dim_products")
-        current_products = dim_products_df.where(col("is_current") == True).cache()
+        if table_name == "dim_customers":
+            dim_country_df = _read_gold_required(spark, "dim_country")
+            df = dim_customers.build(
+                customers_silver,
+                dim_country_df,
+                process_date,
+                process_ts,
+                read_delta_if_exists(spark, GOLD_PATHS["dim_customers"]),
+            )
+            _write_gold_full(df, spark, table_name)
+            return
 
-        if mode == "incremental" and incremental_watermark is not None:
+        if table_name == "dim_products":
+            dim_category_df = _read_gold_required(spark, "dim_category")
+            df = dim_products.build(
+                products_silver,
+                dim_category_df,
+                process_ts,
+                read_delta_if_exists(spark, GOLD_PATHS["dim_products"]),
+            )
+            _write_gold_full(df, spark, table_name)
+            return
+
+        if effective_mode == "incremental" and incremental_watermark is not None and table_name == "fact_order":
             orders_delta = read_silver_since(spark, "orders", incremental_watermark).where(
                 col("validation_errors").isNull()
             )
-            order_items_delta = read_silver_since(spark, "order_items", incremental_watermark).where(
-                col("validation_errors").isNull()
-            )
-            events_delta = read_silver_since(spark, "events", incremental_watermark).where(
-                col("validation_errors").isNull()
-            )
-            sessions_delta = read_silver_since(spark, "sessions", incremental_watermark).where(
-                col("validation_errors").isNull()
-            )
-            reviews_delta = read_silver_since(spark, "reviews", incremental_watermark).where(
-                col("validation_errors").isNull()
-            )
+            if _is_empty(orders_delta):
+                logger.info("No delta rows for fact_order; skipping.")
+                return
 
-            # Narrow down related context for incremental fact builds.
             delta_order_ids = orders_delta.select("order_id").dropDuplicates(["order_id"])
             order_items_delta_related = valid_order_items.join(
                 delta_order_ids,
                 on="order_id",
                 how="inner",
             )
+            if _is_empty(order_items_delta_related):
+                logger.info("No related order_items for fact_order delta; skipping.")
+                return
+
+            dim_date_df = _read_gold_required(spark, "dim_date")
+            dim_country_df = _read_gold_required(spark, "dim_country")
+            dim_source_df = _read_gold_required(spark, "dim_source")
+            dim_device_df = _read_gold_required(spark, "dim_device")
+            dim_payment_method_df = _read_gold_required(spark, "dim_payment_method")
+            dim_customers_df = _read_gold_required(spark, "dim_customers")
+            dim_products_df = _read_gold_required(spark, "dim_products")
+
+            current_customers = dim_customers_df.where(col("is_current") == True)
+            current_products = dim_products_df.where(col("is_current") == True)
+
+            df = fact_order.build(
+                orders_delta,
+                order_items_delta_related,
+                dim_date_df,
+                dim_country_df,
+                dim_source_df,
+                dim_device_df,
+                dim_payment_method_df,
+                current_customers,
+                current_products,
+            )
+            _write_gold_fact_incremental(df, spark, table_name, ["order_id"], "order_key")
+            return
+
+        if effective_mode == "incremental" and incremental_watermark is not None and table_name == "fact_order_item":
+            order_items_delta = read_silver_since(spark, "order_items", incremental_watermark).where(
+                col("validation_errors").isNull()
+            )
+            if _is_empty(order_items_delta):
+                logger.info("No delta rows for fact_order_item; skipping.")
+                return
+
+            dim_date_df = _read_gold_required(spark, "dim_date")
+            dim_customers_df = _read_gold_required(spark, "dim_customers")
+            dim_products_df = _read_gold_required(spark, "dim_products")
+
+            current_customers = dim_customers_df.where(col("is_current") == True)
+            current_products = dim_products_df.where(col("is_current") == True)
+
+            df = fact_order_item.build(
+                valid_orders,
+                order_items_delta,
+                dim_date_df,
+                current_customers,
+                current_products,
+            )
+            _write_gold_fact_incremental(
+                df,
+                spark,
+                table_name,
+                ["order_id", "product_key"],
+                "order_item_key",
+            )
+            return
+
+        if effective_mode == "incremental" and incremental_watermark is not None and table_name == "fact_web_events":
+            events_delta = read_silver_since(spark, "events", incremental_watermark).where(
+                col("validation_errors").isNull()
+            )
+            if _is_empty(events_delta):
+                logger.info("No delta rows for fact_web_events; skipping.")
+                return
 
             delta_session_ids = events_delta.select("session_id").dropDuplicates(["session_id"])
             sessions_related = valid_sessions.join(
@@ -218,61 +336,58 @@ def main(process_date: str, mode: str = "full"):
                 on="session_id",
                 how="inner",
             )
+            if _is_empty(events_delta_with_customer):
+                logger.info("No related sessions for fact_web_events delta; skipping.")
+                return
 
-            fact_order_df = fact_order.build(
-                orders_delta,
-                order_items_delta_related,
-                dim_date_df,
-                dim_country_df,
-                dim_source_df,
-                dim_device_df,
-                dim_payment_method_df,
-                current_customers,
-                current_products,
-            )
-            _write_gold_fact_incremental(
-                fact_order_df, spark, "fact_order", ["order_id"], "order_key"
-            )
+            dim_date_df = _read_gold_required(spark, "dim_date")
+            dim_customers_df = _read_gold_required(spark, "dim_customers")
+            dim_products_df = _read_gold_required(spark, "dim_products")
 
-            fact_order_item_df = fact_order_item.build(
-                valid_orders,
-                order_items_delta,
-                dim_date_df,
-                current_customers,
-                current_products,
-            )
-            _write_gold_fact_incremental(
-                fact_order_item_df,
-                spark,
-                "fact_order_item",
-                ["order_id", "product_key"],
-                "order_item_key",
-            )
+            current_customers = dim_customers_df.where(col("is_current") == True)
+            current_products = dim_products_df.where(col("is_current") == True)
 
-            fact_web_events_df = fact_web_events.build(
+            df = fact_web_events.build(
                 events_delta_with_customer,
                 dim_date_df,
                 current_customers,
                 current_products,
             )
-            _write_gold_fact_incremental(
-                fact_web_events_df,
-                spark,
-                "fact_web_events",
-                ["event_id"],
-                "event_key",
-            )
+            _write_gold_fact_incremental(df, spark, table_name, ["event_id"], "event_key")
+            return
 
-            fact_review_df = fact_review.build(reviews_delta, current_products)
-            _write_gold_fact_incremental(
-                fact_review_df,
-                spark,
-                "fact_review",
-                ["review_id"],
-                "review_key",
+        if effective_mode == "incremental" and incremental_watermark is not None and table_name == "fact_review":
+            reviews_delta = read_silver_since(spark, "reviews", incremental_watermark).where(
+                col("validation_errors").isNull()
             )
+            if _is_empty(reviews_delta):
+                logger.info("No delta rows for fact_review; skipping.")
+                return
 
-            fact_session_df = fact_session.build(
+            dim_products_df = _read_gold_required(spark, "dim_products")
+            current_products = dim_products_df.where(col("is_current") == True)
+
+            df = fact_review.build(reviews_delta, current_products)
+            _write_gold_fact_incremental(df, spark, table_name, ["review_id"], "review_key")
+            return
+
+        if effective_mode == "incremental" and incremental_watermark is not None and table_name == "fact_session":
+            sessions_delta = read_silver_since(spark, "sessions", incremental_watermark).where(
+                col("validation_errors").isNull()
+            )
+            if _is_empty(sessions_delta):
+                logger.info("No delta rows for fact_session; skipping.")
+                return
+
+            dim_date_df = _read_gold_required(spark, "dim_date")
+            dim_country_df = _read_gold_required(spark, "dim_country")
+            dim_source_df = _read_gold_required(spark, "dim_source")
+            dim_device_df = _read_gold_required(spark, "dim_device")
+            dim_customers_df = _read_gold_required(spark, "dim_customers")
+
+            current_customers = dim_customers_df.where(col("is_current") == True)
+
+            df = fact_session.build(
                 sessions_delta,
                 dim_date_df,
                 dim_country_df,
@@ -280,26 +395,22 @@ def main(process_date: str, mode: str = "full"):
                 dim_device_df,
                 current_customers,
             )
-            _write_gold_fact_incremental(
-                fact_session_df,
-                spark,
-                "fact_session",
-                ["session_id"],
-                "session_key",
-            )
+            _write_gold_fact_incremental(df, spark, table_name, ["session_id"], "session_key")
+            return
 
-            # Funnel is highly stateful/time-based; keep full rebuild for correctness.
-            fact_customer_funnel_df = fact_customer_funnel.build(
-                events_with_customer,
-                valid_orders,
-                valid_order_items,
-                dim_date_df,
-                current_customers,
-                current_products,
-            )
-            _write_gold_full(fact_customer_funnel_df, spark, "fact_customer_funnel")
-        else:
-            fact_order_df = fact_order.build(
+        dim_date_df = _read_gold_required(spark, "dim_date")
+        dim_country_df = _read_gold_required(spark, "dim_country")
+        dim_source_df = _read_gold_required(spark, "dim_source")
+        dim_device_df = _read_gold_required(spark, "dim_device")
+        dim_payment_method_df = _read_gold_required(spark, "dim_payment_method")
+        dim_customers_df = _read_gold_required(spark, "dim_customers")
+        dim_products_df = _read_gold_required(spark, "dim_products")
+
+        current_customers = dim_customers_df.where(col("is_current") == True)
+        current_products = dim_products_df.where(col("is_current") == True)
+
+        if table_name == "fact_order":
+            df = fact_order.build(
                 valid_orders,
                 valid_order_items,
                 dim_date_df,
@@ -310,29 +421,37 @@ def main(process_date: str, mode: str = "full"):
                 current_customers,
                 current_products,
             )
-            _write_gold_full(fact_order_df, spark, "fact_order")
+            _write_gold_full(df, spark, table_name)
+            return
 
-            fact_order_item_df = fact_order_item.build(
+        if table_name == "fact_order_item":
+            df = fact_order_item.build(
                 valid_orders,
                 valid_order_items,
                 dim_date_df,
                 current_customers,
                 current_products,
             )
-            _write_gold_full(fact_order_item_df, spark, "fact_order_item")
+            _write_gold_full(df, spark, table_name)
+            return
 
-            fact_web_events_df = fact_web_events.build(
+        if table_name == "fact_web_events":
+            df = fact_web_events.build(
                 events_with_customer,
                 dim_date_df,
                 current_customers,
                 current_products,
             )
-            _write_gold_full(fact_web_events_df, spark, "fact_web_events")
+            _write_gold_full(df, spark, table_name)
+            return
 
-            fact_review_df = fact_review.build(valid_reviews, current_products)
-            _write_gold_full(fact_review_df, spark, "fact_review")
+        if table_name == "fact_review":
+            df = fact_review.build(valid_reviews, current_products)
+            _write_gold_full(df, spark, table_name)
+            return
 
-            fact_session_df = fact_session.build(
+        if table_name == "fact_session":
+            df = fact_session.build(
                 valid_sessions,
                 dim_date_df,
                 dim_country_df,
@@ -340,9 +459,11 @@ def main(process_date: str, mode: str = "full"):
                 dim_device_df,
                 current_customers,
             )
-            _write_gold_full(fact_session_df, spark, "fact_session")
+            _write_gold_full(df, spark, table_name)
+            return
 
-            fact_customer_funnel_df = fact_customer_funnel.build(
+        if table_name == "fact_customer_funnel":
+            df = fact_customer_funnel.build(
                 events_with_customer,
                 valid_orders,
                 valid_order_items,
@@ -350,20 +471,20 @@ def main(process_date: str, mode: str = "full"):
                 current_customers,
                 current_products,
             )
-            _write_gold_full(fact_customer_funnel_df, spark, "fact_customer_funnel")
-
-        latest_processed = get_latest_silver_process_date(spark, SILVER_DATASETS)
-        if latest_processed is not None:
-            upsert_gold_watermark(spark, PIPELINE_NAME, latest_processed)
-            logger.info(f"Gold watermark updated to {latest_processed}")
-
-        logger.info("=== GOLD BUILD COMPLETED ===")
+            _write_gold_full(df, spark, table_name)
+            return
     finally:
         spark.stop()
 
-
 if __name__ == "__main__":
     process_date_arg = sys.argv[1] if len(sys.argv) > 1 else datetime.now().strftime("%Y-%m-%d")
-    mode_arg = sys.argv[2] if len(sys.argv) > 2 else "incremental"
-    main(process_date_arg, mode_arg)
+    table_name_arg = sys.argv[2] if len(sys.argv) > 2 else ""
+    mode_arg = sys.argv[3] if len(sys.argv) > 3 else "incremental"
+
+    if not table_name_arg:
+        raise ValueError("Usage: build_gold.py <process_date> <table_name> [mode]")
+
+    logger.info(f"=== GOLD SINGLE TABLE BUILD: {table_name_arg} ({mode_arg}) ===")
+    main(process_date_arg, table_name_arg, mode_arg)
+    logger.info("=== GOLD SINGLE TABLE BUILD COMPLETED ===")
 
