@@ -5,14 +5,12 @@ from airflow.operators.bash import BashOperator
 from airflow.operators.empty import EmptyOperator
 from airflow.utils.task_group import TaskGroup
 
-
 default_args = {
     "owner": "data-engineering",
     "depends_on_past": False,
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
 }
-
 
 BRONZE_DATASETS = [
     ("events.csv", "events"),
@@ -33,7 +31,6 @@ SILVER_JOBS = [
     ("clean_sessions.py", "sessions"),
 ]
 
-
 SPARK_SUBMIT_BASE = " ".join(
     [
         "spark-submit",
@@ -44,7 +41,6 @@ SPARK_SUBMIT_BASE = " ".join(
         "--conf spark.delta.logStore.class=org.apache.spark.sql.delta.storage.HDFSLogStore",
     ]
 )
-
 
 with DAG(
     dag_id="medallion_pipeline_skeleton",
@@ -82,14 +78,181 @@ with DAG(
                 ),
             )
 
-    gold_transform = BashOperator(
-        task_id="gold_transform",
-        bash_command=(
-            "echo '[TODO] Run Gold jobs for ingest_date={{ ds }}' "
-            "&& echo 'Replace this task with mart/aggregation job later.'"
-        ),
-    )
+    with TaskGroup(group_id="gold_transform") as gold_transform:
+        with TaskGroup(group_id="dim_static") as gold_dim_static:
+            build_dim_country = BashOperator(
+                task_id="build_dim_country",
+                bash_command=(
+                    f"{SPARK_SUBMIT_BASE} "
+                    "/opt/project/scripts/build_gold.py "
+                    "{{ ds }} "
+                    "dim_country "
+                    "incremental"
+                ),
+            )
+
+            build_dim_source = BashOperator(
+                task_id="build_dim_source",
+                bash_command=(
+                    f"{SPARK_SUBMIT_BASE} "
+                    "/opt/project/scripts/build_gold.py "
+                    "{{ ds }} "
+                    "dim_source "
+                    "incremental"
+                ),
+            )
+
+            build_dim_device = BashOperator(
+                task_id="build_dim_device",
+                bash_command=(
+                    f"{SPARK_SUBMIT_BASE} "
+                    "/opt/project/scripts/build_gold.py "
+                    "{{ ds }} "
+                    "dim_device "
+                    "incremental"
+                ),
+            )
+
+            build_dim_payment_method = BashOperator(
+                task_id="build_dim_payment_method",
+                bash_command=(
+                    f"{SPARK_SUBMIT_BASE} "
+                    "/opt/project/scripts/build_gold.py "
+                    "{{ ds }} "
+                    "dim_payment_method "
+                    "incremental"
+                ),
+            )
+
+            build_dim_date = BashOperator(
+                task_id="build_dim_date",
+                bash_command=(
+                    f"{SPARK_SUBMIT_BASE} "
+                    "/opt/project/scripts/build_gold.py "
+                    "{{ ds }} "
+                    "dim_date "
+                    "incremental"
+                ),
+            )
+
+            build_dim_category = BashOperator(
+                task_id="build_dim_category",
+                bash_command=(
+                    f"{SPARK_SUBMIT_BASE} "
+                    "/opt/project/scripts/build_gold.py "
+                    "{{ ds }} "
+                    "dim_category "
+                    "incremental"
+                ),
+            )
+
+        with TaskGroup(group_id="dim_scd2") as gold_dim_scd2:
+            build_dim_customers = BashOperator(
+                task_id="build_dim_customers",
+                bash_command=(
+                    f"{SPARK_SUBMIT_BASE} "
+                    "/opt/project/scripts/build_gold.py "
+                    "{{ ds }} "
+                    "dim_customers "
+                    "incremental"
+                ),
+            )
+
+            build_dim_products = BashOperator(
+                task_id="build_dim_products",
+                bash_command=(
+                    f"{SPARK_SUBMIT_BASE} "
+                    "/opt/project/scripts/build_gold.py "
+                    "{{ ds }} "
+                    "dim_products "
+                    "incremental"
+                ),
+            )
+
+            build_dim_country >> build_dim_customers
+            build_dim_category >> build_dim_products
+
+        with TaskGroup(group_id="fact_tables") as gold_facts:
+            build_fact_order = BashOperator(
+                task_id="build_fact_order",
+                bash_command=(
+                    f"{SPARK_SUBMIT_BASE} "
+                    "/opt/project/scripts/build_gold.py "
+                    "{{ ds }} "
+                    "fact_order "
+                    "incremental"
+                ),
+            )
+
+            build_fact_order_item = BashOperator(
+                task_id="build_fact_order_item",
+                bash_command=(
+                    f"{SPARK_SUBMIT_BASE} "
+                    "/opt/project/scripts/build_gold.py "
+                    "{{ ds }} "
+                    "fact_order_item "
+                    "incremental"
+                ),
+            )
+
+            build_fact_web_events = BashOperator(
+                task_id="build_fact_web_events",
+                bash_command=(
+                    f"{SPARK_SUBMIT_BASE} "
+                    "/opt/project/scripts/build_gold.py "
+                    "{{ ds }} "
+                    "fact_web_events "
+                    "incremental"
+                ),
+            )
+
+            build_fact_review = BashOperator(
+                task_id="build_fact_review",
+                bash_command=(
+                    f"{SPARK_SUBMIT_BASE} "
+                    "/opt/project/scripts/build_gold.py "
+                    "{{ ds }} "
+                    "fact_review "
+                    "incremental"
+                ),
+            )
+
+            build_fact_session = BashOperator(
+                task_id="build_fact_session",
+                bash_command=(
+                    f"{SPARK_SUBMIT_BASE} "
+                    "/opt/project/scripts/build_gold.py "
+                    "{{ ds }} "
+                    "fact_session "
+                    "incremental"
+                ),
+            )
+
+            build_fact_customer_funnel = BashOperator(
+                task_id="build_fact_customer_funnel",
+                bash_command=(
+                    f"{SPARK_SUBMIT_BASE} "
+                    "/opt/project/scripts/build_gold.py "
+                    "{{ ds }} "
+                    "fact_customer_funnel "
+                    "incremental"
+                ),
+            )
+
+        update_gold_watermark = BashOperator(
+            task_id="update_gold_watermark",
+            bash_command=(
+                f"{SPARK_SUBMIT_BASE} "
+                "/opt/project/scripts/build_gold.py "
+                "{{ ds }} "
+                "update_watermark "
+                "incremental"
+            ),
+        )
+
+        gold_dim_static >> gold_dim_scd2 >> gold_facts >> update_gold_watermark
 
     end = EmptyOperator(task_id="end")
 
     start >> bronze_ingestion >> silver_transform >> gold_transform >> end
+
