@@ -9,7 +9,6 @@ from gold_utils import build_scd2_dimension
 
 def build(
     customers_df: DataFrame,
-    dim_country: DataFrame,
     process_date: str,
     process_ts: str,
     existing_df: DataFrame | None,

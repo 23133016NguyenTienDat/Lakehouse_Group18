@@ -220,10 +220,8 @@ def main(process_date: str, table_name: str, mode: str = "incremental"):
             return
 
         if table_name == "dim_customers":
-            dim_country_df = _read_gold_required(spark, "dim_country")
             df = dim_customers.build(
                 customers_silver,
-                dim_country_df,
                 process_date,
                 process_ts,
                 read_delta_if_exists(spark, GOLD_PATHS["dim_customers"]),
