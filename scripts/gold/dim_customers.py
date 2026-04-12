@@ -3,13 +3,12 @@ from __future__ import annotations
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, lit, when
 
-from gold.common import attach_dimension_key, country_name_expr
+from gold.common import country_name_expr
 from gold_utils import build_scd2_dimension
 
 
 def build(
     customers_df: DataFrame,
-    dim_country: DataFrame,
     process_date: str,
     process_ts: str,
     existing_df: DataFrame | None,
@@ -19,17 +18,6 @@ def build(
     source = (
         customers_df.where(col("customer_id").isNotNull())
         .withColumn("country_name", country_name_expr("country"))
-        .transform(
-            lambda df: attach_dimension_key(
-                df,
-                "country_name",
-                dim_country,
-                "country_name",
-                "country_key",
-                "country_key",
-                "customer_country",
-            )
-        )
         .withColumn(
             "birth_year",
             when(
@@ -41,7 +29,7 @@ def build(
             "customer_id",
             "name",
             "email",
-            "country_key",
+            "country_name",
             "birth_year",
             "signup_date",
             "marketing_opt_in",
@@ -55,7 +43,7 @@ def build(
         attribute_cols=[
             "name",
             "email",
-            "country_key",
+            "country_name",
             "birth_year",
             "signup_date",
             "marketing_opt_in",
