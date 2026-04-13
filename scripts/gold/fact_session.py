@@ -1,9 +1,8 @@
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, date_format
 
-from gold.common import attach_dimension_key, country_name_expr
+from gold.common import attach_dimension_key
 from gold_utils import assign_surrogate_key
-
 
 def build(
     sessions_df: DataFrame,
@@ -15,7 +14,7 @@ def build(
 ) -> DataFrame:
     fact = (
         sessions_df.join(current_customers.select("customer_id", "customer_key"), on="customer_id", how="left")
-        .withColumn("country_name", country_name_expr("country"))
+        .withColumn("country_name", col("country"))
         .transform(
             lambda df: attach_dimension_key(
                 df, "session_date", dim_date, "full_date", "date_key", "date_key", "session_date_lookup"

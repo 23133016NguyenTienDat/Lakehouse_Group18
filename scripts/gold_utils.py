@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import logging
+
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.column import Column
 from pyspark.sql.functions import col, lit, row_number, sha2, concat_ws, coalesce, max as spark_max
 from pyspark.sql.window import Window
 
-from silver_utils import logger
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 GOLD_BASE_PATH = "hdfs://namenode:8020/lakehouse/gold"
 GOLD_WATERMARK_TABLE = "gold.pipeline_watermark"
