@@ -1,9 +1,8 @@
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import coalesce, col, lit, sum as spark_sum
 
-from gold.common import attach_dimension_key, country_name_expr
+from gold.common import attach_dimension_key
 from gold_utils import assign_surrogate_key
-
 
 def build(
     orders_df: DataFrame,
@@ -30,7 +29,7 @@ def build(
     fact = (
         orders_df.join(order_costs, on="order_id", how="left")
         .join(current_customers.select("customer_id", "customer_key"), on="customer_id", how="left")
-        .withColumn("country_name", country_name_expr("country"))
+        .withColumn("country_name", col("country"))
         .transform(
             lambda df: attach_dimension_key(
                 df, "order_date", dim_date, "full_date", "date_key", "date_key", "order_date"

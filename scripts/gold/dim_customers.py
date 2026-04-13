@@ -3,9 +3,7 @@ from __future__ import annotations
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, lit, when
 
-from gold.common import country_name_expr
 from gold_utils import build_scd2_dimension
-
 
 def build(
     customers_df: DataFrame,
@@ -17,7 +15,7 @@ def build(
 
     source = (
         customers_df.where(col("customer_id").isNotNull())
-        .withColumn("country_name", country_name_expr("country"))
+        .withColumn("country_name", col("country"))
         .withColumn(
             "birth_year",
             when(

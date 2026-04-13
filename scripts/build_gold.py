@@ -30,6 +30,7 @@ from gold_utils import (
     create_gold_spark_session,
     get_gold_watermark,
     get_latest_silver_process_date,
+    logger,
     read_delta_if_exists,
     read_silver as read_silver_base,
     read_silver_since,
@@ -37,7 +38,6 @@ from gold_utils import (
     write_gold_merge,
     write_gold_overwrite,
 )
-from silver_utils import logger
 
 SILVER_DATASETS = [
     "customers",
