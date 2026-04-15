@@ -21,7 +21,7 @@ for SCRIPT in "${SCRIPTS[@]}"; do
         /opt/spark/bin/spark-submit \
         --master spark://spark-master:7077 \
         --packages io.delta:delta-spark_2.12:3.3.0 \
-        /opt/project/scripts/$SCRIPT \
+        /opt/project/scripts/silver/$SCRIPT \
         "$PROCESS_DATE"
     
     if [ $? -eq 0 ]; then

@@ -47,7 +47,7 @@ for item in "${CSV_FILES[@]}"; do
     MSYS_NO_PATHCONV=1 docker exec lakehouse-spark-master \
         /opt/spark/bin/spark-submit \
         --master spark://spark-master:7077 \
-        /opt/project/scripts/ingest_bronze.py \
+        /opt/project/scripts/bronze/ingest_bronze.py \
         "$INGEST_DATE" \
         "$CSV_FILE" \
         "$DATASET_NAME"
