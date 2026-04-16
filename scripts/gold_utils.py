@@ -4,9 +4,15 @@ from __future__ import annotations
 import logging
 
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.column import Column
-from pyspark.sql.functions import col, lit, row_number, sha2, concat_ws, coalesce, max as spark_max
-from pyspark.sql.window import Window
+from pyspark.sql.functions import (
+    col,
+    lit,
+    sha2,
+    concat_ws,
+    coalesce,
+    monotonically_increasing_id,
+    max as spark_max,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -123,7 +129,10 @@ def write_gold_merge(
         return
 
     prepared_df = df
-    if surrogate_col and surrogate_col in df.columns:
+    if surrogate_col:
+        if surrogate_col not in prepared_df.columns:
+            prepared_df = prepared_df.withColumn(surrogate_col, lit(None).cast("long"))
+
         existing_surrogate = (
             spark.read.format("delta").load(path)
             .select(*key_cols, col(surrogate_col).alias("_existing_surrogate"))
@@ -145,7 +154,7 @@ def write_gold_merge(
             prepared_df.where(col("_existing_surrogate").isNull())
             .withColumn(
                 surrogate_col,
-                row_number().over(Window.orderBy(*[col(k) for k in key_cols])) + lit(max_surrogate),
+                monotonically_increasing_id() + lit(max_surrogate + 1),
             )
             .drop("_existing_surrogate")
         )
@@ -210,23 +219,13 @@ def upsert_gold_watermark(spark: SparkSession, pipeline_name: str, process_date:
     )
 
 
-def _normalize_order_cols(order_cols: list) -> list[Column]:
-    normalized = []
-    for order_col in order_cols:
-        if isinstance(order_col, Column):
-            normalized.append(order_col)
-        else:
-            normalized.append(col(order_col))
-    return normalized
-
 def assign_surrogate_key(
     df: DataFrame,
     key_col: str,
     order_cols: list,
     start_at: int = 0,
 ) -> DataFrame:
-    window = Window.orderBy(*_normalize_order_cols(order_cols))
-    return df.withColumn(key_col, row_number().over(window) + lit(start_at))
+    return df.withColumn(key_col, monotonically_increasing_id() + lit(start_at + 1))
 
 def build_static_dimension(
     source_df: DataFrame,
