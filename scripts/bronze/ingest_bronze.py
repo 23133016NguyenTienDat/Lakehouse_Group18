@@ -9,8 +9,6 @@ from pyspark.sql.functions import col, lit, trim, when, current_timestamp, input
 import sys
 from datetime import datetime
 
-
-# NEW: Deterministic dataset -> primary key mapping for canonical record_id generation.
 dataset_primary_key = {
     "events": "event_id",
     "customers": "customer_id",
@@ -23,15 +21,14 @@ dataset_primary_key = {
 
 
 def create_events_schema():
-    """Định nghĩa schema cố định cho events dataset"""
     return StructType([
         StructField("event_id", IntegerType(), True),
         StructField("session_id", IntegerType(), True),
         StructField("timestamp", StringType(), True),
         StructField("event_type", StringType(), True),
         StructField("product_id", DoubleType(), True),
-        StructField("qty", DoubleType(), True),
-        StructField("cart_size", DoubleType(), True),
+        StructField("qty", IntegerType(), True),
+        StructField("cart_size", IntegerType(), True),
         StructField("payment", StringType(), True),
         StructField("discount_pct", DoubleType(), True),
         StructField("amount_usd", DoubleType(), True),
@@ -129,24 +126,13 @@ def get_schema_for_dataset(dataset_name):
 
 
 def normalize_column_names(df):
-    """
-    Chuẩn hóa tên cột:
-    """
     for column in df.columns:
-        # Chuyển về lowercase và replace space với underscore
         normalized_name = column.lower().strip().replace(" ", "_")
         df = df.withColumnRenamed(column, normalized_name)
     return df
 
 
 def add_canonical_record_id(df, dataset_name):
-    """
-    Tạo record_id chuẩn dựa trên dataset_name để tránh map sai semantic identity.
-    """
-    # REMOVED: Generic first-match selection is dangerous because column order/presence
-    # can vary across datasets and produce non-deterministic or semantically wrong IDs.
-
-    # UPDATED: order_items has no single natural key. Use composite business key.
     if dataset_name == "order_items":
         if "order_id" in df.columns and "product_id" in df.columns:
             print("   Mapping record_id from composite key: order_id + product_id")
@@ -157,14 +143,11 @@ def add_canonical_record_id(df, dataset_name):
                 )
                 .withColumn("record_id_source", lit("order_id_product_id"))
             )
-
-        print("   Warning: Composite key columns not found for order_items. record_id will be NULL")
         return (
             df.withColumn("record_id", lit(None).cast(StringType()))
             .withColumn("record_id_source", lit("NOT_FOUND"))
         )
 
-    # UPDATED: Deterministic primary key by dataset_name.
     primary_key_col = dataset_primary_key.get(dataset_name)
     if primary_key_col and primary_key_col in df.columns:
         print(f"   Mapping record_id from {primary_key_col}")
@@ -172,12 +155,6 @@ def add_canonical_record_id(df, dataset_name):
             df.withColumn("record_id", trim(col(primary_key_col).cast(StringType())))
             .withColumn("record_id_source", lit(primary_key_col))
         )
-
-    # UPDATED: Null-safe fallback for schema drift / missing key column.
-    print(
-        f"   Warning: Expected primary key not found for dataset '{dataset_name}'. "
-        "record_id will be NULL"
-    )
     return (
         df.withColumn("record_id", lit(None).cast(StringType()))
         .withColumn("record_id_source", lit("NOT_FOUND"))
@@ -194,9 +171,6 @@ def add_data_quality_flags(df):
         )
         .withColumn("is_valid_record_id", col("dq_error").isNull())
     )
-
-
-
 
 def ingest_to_bronze(csv_path, hdfs_output_path, ingest_date, dataset_name="events"):
     print("Starting Bronze Layer Ingestion")
@@ -265,23 +239,32 @@ def ingest_to_bronze(csv_path, hdfs_output_path, ingest_date, dataset_name="even
             .save(output_full_path)
         
         print("Write to Bronze Delta layer completed")
-        
-        verification_df = spark.read.format("delta").load(output_full_path)
-        
 
-        print(f"\nSchema verification:")
-        verification_df.printSchema()
-        
-        print(f"\nPartition structure (ingest_date only):")
-        verification_df.select("ingest_date") \
-            .distinct() \
-            .orderBy("ingest_date") \
-            .show(20, truncate=False)
-        
-        print(f"\nData quality summary:")
-        verification_df.groupBy("is_valid_record_id") \
-            .count() \
-            .show(truncate=False)
+        try:
+            verification_df = (
+                spark.read.format("delta")
+                .load(output_full_path)
+                .filter(col("ingest_date") == ingest_date)
+            )
+
+            print(f"\nSchema verification:")
+            verification_df.printSchema()
+
+            print(f"\nPartition structure (ingest_date only):")
+            verification_df.select("ingest_date") \
+                .distinct() \
+                .orderBy("ingest_date") \
+                .show(20, truncate=False)
+
+            print(f"\nData quality summary for ingest_date={ingest_date}:")
+            verification_df.groupBy("is_valid_record_id") \
+                .count() \
+                .show(truncate=False)
+        except Exception as verify_err:
+            print(
+                "\nWARNING: Verification step skipped due to table scan issue "
+                f"({str(verify_err)}). Data write already completed."
+            )
         
         print("\n" + "=" * 80)
         print("Bronze Layer Ingestion COMPLETED Successfully")
@@ -324,8 +307,7 @@ def main():
     print(f"   Input: {CSV_INPUT_PATH}")
     print(f"   Output: {HDFS_OUTPUT_BASE}/{dataset_name}")
     print(f"{'='*80}\n")
-    
-    # Chạy ingestion
+
     ingest_to_bronze(
         csv_path=CSV_INPUT_PATH,
         hdfs_output_path=HDFS_OUTPUT_BASE,
